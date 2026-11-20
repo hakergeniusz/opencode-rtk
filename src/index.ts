@@ -1,5 +1,5 @@
 /**
- * opencode-rtk — native OpenCode V2 port of `pi-rtk`.
+ * opencode-rtk — rtk integration for OpenCode V2.
  *
  * Rewrites the agent's bash commands to their rtk equivalents
  * (https://github.com/rtk-ai/rtk) before execution, so tool output reaches the
@@ -57,8 +57,7 @@ const runProcess: ExecFn = (command, args, options = {}) => {
 /**
  * Send a short, user-facing message into the session transcript.
  * `resume: false` admits the synthetic message without scheduling an agent
- * turn, so it is displayed to the user but never reaches the model — the same
- * guarantee pi got from a custom transcript entry.
+ * turn, so it is displayed to the user but never reaches the model.
  */
 async function present(ctx: any, sessionID: string, text: string): Promise<void> {
   try {
@@ -82,14 +81,14 @@ export default Plugin.define({
     await engine.init()
 
     if (!engine.available) {
-      // Fail open: no rewrite hook, no commands — exactly like the pi original.
+      // Fail open: no rewrite hook, no commands.
       // V2 has no server-side status-bar widget; the reason is logged instead.
       console.warn(`[rtk] ${engine.unavailableReason ?? "rtk unavailable"} — plugin disabled`)
       return
     }
 
     // Snapshot rtk's gain tracker at load time, and again whenever a session is
-    // created (the closest V2 equivalent of pi's `session_start` event).
+    // created.
     await engine.onSessionStart().catch(() => {})
 
     const events = new AbortController()
@@ -110,8 +109,8 @@ export default Plugin.define({
       const input = event.input as { command?: unknown } | undefined
       if (!input || typeof input.command !== "string") return
 
-      // V2's `execute.before` event has no AbortSignal field (pi's tool_call
-      // event had ctx.signal), so the rtk subprocess cannot be cancelled here.
+      // V2's `execute.before` event has no AbortSignal field, so the rtk
+      // subprocess cannot be cancelled from the hook here.
       const rewritten = await engine.rewriteBashCommand(input.command)
       if (rewritten !== input.command) input.command = rewritten
     })

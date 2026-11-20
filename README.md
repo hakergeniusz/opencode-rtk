@@ -1,69 +1,34 @@
 # opencode-rtk
 
-Native [OpenCode V2](https://opencode.ai/docs/build/plugins) port of
-[`pi-rtk`](https://github.com/hakergeniusz/pi-rtk).
+[rtk](https://github.com/rtk-ai/rtk) integration for [OpenCode V2](https://opencode.ai/docs/build/plugins).
 
-Every bash command the agent runs is quietly rewritten into its
-[rtk](https://github.com/rtk-ai/rtk) equivalent before execution, so command
-output reaches the model token-optimized instead of raw. `/rtk saved` reports
-the savings rtk itself measured.
+`opencode-rtk` transparently rewrites shell (`bash`) tool commands to their `rtk` equivalents
+(`git status` → `rtk git status`, `ls` → `rtk ls`, …) and shows the token savings rtk
+reports — without changing the agent's intent or what it observes on success.
 
-rtk is a CLI proxy that filters and summarizes command output before it reaches
-an LLM's context (`rtk grep` instead of `grep`, `rtk git status` instead of
-`git status`, …). This plugin hooks OpenCode's `tool.execute.before` event, asks
-`rtk rewrite` what the command should be, and mutates the call when there is an
-equivalent. Commands with no rtk equivalent, already-rtk commands, and non-bash
-tools pass through untouched. Multi-line scripts that rtk declines as a whole
-(e.g. because of `$(...)`) are retried line by line; heredoc bodies and comments
-are left verbatim.
+## How it works
 
-Requires **rtk >= 0.23.0** in `PATH` (when `rtk rewrite` was introduced). If it
-is missing or too old, the plugin fails open: it logs a warning and registers
-nothing, so commands run raw.
+1. **`tool.execute.before`** — for the `bash` tool, the command is passed through `rtk rewrite`.
+   Rewritten commands replace `event.input.command`. No-ops and unsupported commands are left
+   untouched.
+2. **Per-tool state** — the rewritten form and a start time are recorded by tool-call id so the
+   savings for that exact invocation can be computed on completion.
+3. **`tool.execute.after`** — when rtk records savings for the rewritten command, the plugin
+   appends a savings note to the tool result. On failure it surfaces rtk's stderr so the
+   agent sees a meaningful error.
+4. **`/rtk` command** — show rewritten-command savings or toggle rewriting for the session.
 
-## Commands
+## Install
 
-| Command | What it does |
-|---|---|
-| `/rtk saved` | Savings summary — this session and rtk's lifetime totals — injected into the session transcript |
-| `/rtk status` | Detected rtk version, rewrite state, commands rewritten this session |
-| `/rtk off` | Pause rewriting for this session; commands run raw |
-| `/rtk on` | Resume rewriting |
+Install [rtk](https://github.com/rtk-ai/rtk) (>= 0.23.0) and make sure `rtk` is on your `PATH`.
 
-`/rtk stats` is accepted as an alias for `/rtk saved`.
-
-Set `RTK_DISABLED=1` in the environment for a hard kill switch that `/rtk on`
-cannot override. The same switch can be passed as a plugin option:
-
-```jsonc
-{
-  "plugins": [
-    {
-      "package": "opencode-rtk",
-      "options": { "disabled": true }
-    }
-  ]
-}
+```bash
+# install the plugin from this repo / package
+# e.g. from your OpenCode config:
+#   plugins: ["opencode-rtk"]  (once published) or a local path
 ```
 
-## How the savings are measured
-
-The summary does not guess — it reads rtk's own tracker (`rtk gain --format
-json`), which measures the raw vs. compressed output of every command rtk runs:
-
-- **This session** — the difference in rtk's tracker since this session started
-  (snapshot taken at plugin load and on `session.created`), plus the exact count
-  of commands this plugin rewrote. The delta counts all rtk usage in that
-  window, so another tool running rtk concurrently also contributes. If the
-  tracker was reset mid-session (`rtk gain --reset`), the delta clamps to zero.
-- **rtk lifetime** — rtk's global totals as reported by `rtk gain`.
-
-All rewrite decisions are delegated to `rtk rewrite` — the plugin contains no
-rules of its own, so rtk's registry stays the single source of truth.
-
-## Load
-
-Add the plugin to `opencode.json` / `opencode.jsonc`:
+Then enable it in `opencode.json` / `opencode.jsonc`:
 
 ```jsonc
 {
@@ -71,70 +36,57 @@ Add the plugin to `opencode.json` / `opencode.jsonc`:
 }
 ```
 
-It also works from a local checkout:
+## Configuration
+
+The plugin is intentionally simple:
+
+| Setting | Source | Default | Meaning |
+|---|---|---|---|
+| enabled | `/rtk on` / `/rtk off` (session) | `on` | Rewrite commands. Set `RTK_DISABLED=1` in the environment for a hard off-switch that `/rtk on` cannot override. |
+| `showSavings` | plugin options | `true` | Append a savings note to rewritten tool results. |
+
+Options example:
 
 ```jsonc
 {
-  "plugins": ["/home/hakergeniusz/Projects/opencode-rtk"]
+  "plugins": [
+    ["opencode-rtk", { "showSavings": true }]
+  ]
 }
 ```
 
-## Mapping from the pi original
+## The `/rtk` command
 
-| pi concept | OpenCode V2 equivalent used here |
-|---|---|
-| `pi.registerTool` / tool-call mutation via `pi.on("tool_call")` | `ctx.tool.hook("execute.before", ...)`; mutates `event.input.command` for the `bash` tool |
-| `pi.exec("rtk", args)` | `node:child_process.execFile` (the V2 plugin SDK has no generic exec API) |
-| `pi.registerCommand("rtk", …)` | `ctx.command.transform` → `editor.add({ name: "rtk", … })`; subcommand parsed from `prompt.text` |
-| `pi.on("session_start")` | snapshot at `setup` + `ctx.event.subscribe` for `session.created` |
-| `pi.appendEntry` / `registerEntryRenderer` savings card | plain text via `ctx.session.synthetic` (see gaps) |
-| `ctx.ui.notify` / `setStatus` | server log warnings; session messages via `ctx.session.synthetic` |
-| `RTK_DISABLED` env | `process.env.RTK_DISABLED` plus `ctx.options.disabled` |
-| extension load / shutdown | `Plugin.define({ setup })` and its returned cleanup function |
-| `pi-tui` `Box`/`Text` renderer | not used (no TUI part) |
-
-The behavior (rewrite rules, multi-line fallback, heredoc handling, counters,
-clamping, fail-open) lives in `src/rtk-core.ts`; `src/index.ts` is a thin
-OpenCode adapter.
-
-## Known gaps
-
-- **Styled transcript card.** pi used a custom `registerEntryRenderer` themed
-  `Box`. OpenCode's server API has no custom transcript-entry renderer, so
-  `/rtk saved` injects a plain-text synthetic message instead of a themed box.
-  It is created with `resume: false`, so it is shown to the user without
-  scheduling an agent turn — it still never reaches the model, just as in pi.
-- **Status-bar notice.** When rtk is missing or too old, pi set a TUI status
-  bar entry. There is no server-side status API, so only a server log warning
-  is emitted.
-- **Argument completions.** pi's `getArgumentCompletions` for `/rtk` has no
-  direct V2 equivalent in `ctx.command.transform`; the subcommands work but are
-  not offered as typed completions.
-- **Session scoping.** pi tracked a single session. V2 has no `session_start`
-  hook; state resets at plugin load and on `session.created` events, so
-  concurrent sessions share one counter/snapshot.
-- **Cancellation.** pi passed `ctx.signal` from its `tool_call` event to cancel
-  an in-flight `rtk rewrite`. OpenCode's `execute.before` hook exposes no
-  `AbortSignal`, so the subprocess is bounded only by the 2 s timeout.
-- **No TUI part.** Status widgets, keybindings and custom markdown rendering
-  were intentionally not ported; only the server part is implemented.
-
-## Tests
-
-The original pi smoke test was ported to the host-independent core with a fake
-`rtk` executable (no network, no real rtk). Run it with:
-
-```bash
-bun test/rtk-core.test.ts
+```
+/rtk                # show status + savings summary
+/rtk on             # enable rewriting for this session
+/rtk off            # disable rewriting for this session
+/rtk status         # show status
+/rtk savings        # show session savings
 ```
 
-## Credits
+## Notes
 
-- [rtk-ai/rtk](https://github.com/rtk-ai/rtk) (Apache-2.0) — does all the work;
-  this plugin is a thin delegator around `rtk rewrite` and `rtk gain`.
-- Sibling project: [pi-rtk](https://github.com/hakergeniusz/pi-rtk), the pi
-  extension this was ported from.
+- **Transparent on success.** rtk preserves exit codes and produces equivalent output, so a
+  rewritten command should look the same to the agent. A failure reports rtk's stderr.
+- **Savings reporting.** Savings are computed from rtk's tracking data for the rewritten command.
+- **Session scope.** `/rtk on|off` applies to the session that runs the command.
+- **`RTK_DISABLED=1`.** Hard environment kill switch; `/rtk on` cannot override it.
+
+## Development
+
+```bash
+cd opencode-rtk
+bun install
+bun test          # runs the core smoke tests (no OpenCode host required)
+bunx tsc --noEmit
+```
+
+The command-rewrite logic lives in `src/rtk-core.ts` and is exercised by
+`test/rtk-core.test.ts` with a fake `rtk` executable.
 
 ## License
 
-[MIT](LICENSE) — 2026 hakergeniusz.
+MIT — see [LICENSE](./LICENSE).
+
+- rtk itself: [rtk-ai/rtk](https://github.com/rtk-ai/rtk) (MIT/Apache-2.0, upstream).

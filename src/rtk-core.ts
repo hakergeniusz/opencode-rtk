@@ -1,10 +1,10 @@
 /**
  * Pure, host-independent core of the rtk plugin.
  *
- * It deliberately imports neither `@opencode/plugin` nor any pi package: the
- * OpenCode adapter in `index.ts` supplies an `ExecFn`, and the smoke tests
+ * It deliberately imports neither `@opencode/plugin` nor host-specific packages:
+ * the OpenCode adapter in `index.ts` supplies an `ExecFn`, and the smoke tests
  * supply a fake one. All rewrite policy stays in `rtk rewrite`; this module is
- * a thin delegator, exactly like the original pi extension.
+ * a thin delegator.
  *
  * `rtk rewrite` exit-code contract:
  *   0 + stdout  Rewrite found   -> mutate command
@@ -215,7 +215,7 @@ export function pct(p: number | null | undefined): string {
 }
 
 export interface EngineOptions {
-  /** Hard kill switch (`RTK_DISABLED=1` in pi); `/rtk on` cannot override it. */
+  /** Hard kill switch (`RTK_DISABLED=1`); `/rtk on` cannot override it. */
   hardDisabled?: boolean
 }
 

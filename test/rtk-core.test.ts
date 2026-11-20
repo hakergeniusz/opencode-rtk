@@ -1,6 +1,6 @@
 /**
- * Smoke tests for the host-independent core. Ported from the pi-rtk smoke
- * test: a fake `rtk` executable, no network, no real rtk, no OpenCode/pi host.
+ * Smoke tests for the host-independent core: a fake `rtk` executable, no
+ * network, no real rtk, no OpenCode host.
  *
  * Run with:  bun test/rtk-core.test.ts
  */
